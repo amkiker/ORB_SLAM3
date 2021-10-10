@@ -76,7 +76,8 @@ int main(int argc, char **argv)
   ros::init(argc, argv, "Stereo_Inertial");
   ros::NodeHandle n("~");
   ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info);
-  bool bEqual = false;
+  bool bEqual = false;//是否需要图像矫正的标志
+  //检查参数个数
   if(argc < 4 || argc > 5)
   {
     cerr << endl << "Usage: rosrun ORB_SLAM3 Stereo_Inertial path_to_vocabulary path_to_settings do_rectify [do_equalize]" << endl;
@@ -84,10 +85,10 @@ int main(int argc, char **argv)
     return 1;
   }
 
-  std::string sbRect(argv[3]);
+  std::string sbRect(argv[3]);//是否需要图像矫正
   if(argc==5)
   {
-    std::string sbEqual(argv[4]);
+    std::string sbEqual(argv[4]);//是否需要直方图均衡
     if(sbEqual == "true")
       bEqual = true;
   }
@@ -97,7 +98,7 @@ int main(int argc, char **argv)
 
   ImuGrabber imugb;
   ImageGrabber igb(&SLAM,&imugb,sbRect == "true",bEqual);
-  
+  //如果需要进行双目图像矫正，则从配置文件读取相关的参数
     if(igb.do_rectify)
     {      
         // Load settings related to stereo calibration
@@ -109,16 +110,16 @@ int main(int argc, char **argv)
         }
 
         cv::Mat K_l, K_r, P_l, P_r, R_l, R_r, D_l, D_r;
-        fsSettings["LEFT.K"] >> K_l;
+        fsSettings["LEFT.K"] >> K_l;//相机内参
         fsSettings["RIGHT.K"] >> K_r;
 
-        fsSettings["LEFT.P"] >> P_l;
+        fsSettings["LEFT.P"] >> P_l;//矫正后新的投影矩阵(期望将相机矫正到这个投影矩阵)
         fsSettings["RIGHT.P"] >> P_r;
 
-        fsSettings["LEFT.R"] >> R_l;
-        fsSettings["RIGHT.R"] >> R_r;
+        fsSettings["LEFT.R"] >> R_l;//立体矫正的旋转矩阵，
+        fsSettings["RIGHT.R"] >> R_r;//将双目图像变换到共平面且水平平行
 
-        fsSettings["LEFT.D"] >> D_l;
+        fsSettings["LEFT.D"] >> D_l;//相机畸变参数
         fsSettings["RIGHT.D"] >> D_r;
 
         int rows_l = fsSettings["LEFT.height"];
@@ -132,16 +133,18 @@ int main(int argc, char **argv)
             cerr << "ERROR: Calibration parameters to rectify stereo are missing!" << endl;
             return -1;
         }
-
+        //输入图像参数，计算无畸变和修正转换映射，详见博客 https://blog.csdn.net/u013341645/article/details/78710740
         cv::initUndistortRectifyMap(K_l,D_l,R_l,P_l.rowRange(0,3).colRange(0,3),cv::Size(cols_l,rows_l),CV_32F,igb.M1l,igb.M2l);
         cv::initUndistortRectifyMap(K_r,D_r,R_r,P_r.rowRange(0,3).colRange(0,3),cv::Size(cols_r,rows_r),CV_32F,igb.M1r,igb.M2r);
     }
 
   // Maximum delay, 5 seconds
+  //订阅左右目图像和IMU数据
   ros::Subscriber sub_imu = n.subscribe("/imu", 1000, &ImuGrabber::GrabImu, &imugb); 
   ros::Subscriber sub_img_left = n.subscribe("/camera/left/image_raw", 100, &ImageGrabber::GrabImageLeft,&igb);
   ros::Subscriber sub_img_right = n.subscribe("/camera/right/image_raw", 100, &ImageGrabber::GrabImageRight,&igb);
-
+  
+  //开启一个线程同步图像和IMU数据
   std::thread sync_thread(&ImageGrabber::SyncWithImu,&igb);
 
   ros::spin();
@@ -152,6 +155,9 @@ int main(int argc, char **argv)
 
 
 void ImageGrabber::GrabImageLeft(const sensor_msgs::ImageConstPtr &img_msg)
+/**********************************************************
+*获取左目图像，放入队列imgLeftBuf中，队列中始终只有最新的那一帧图像
+***********************************************************/
 {
   mBufMutexLeft.lock();
   if (!imgLeftBuf.empty())
@@ -194,6 +200,9 @@ cv::Mat ImageGrabber::GetImage(const sensor_msgs::ImageConstPtr &img_msg)
 }
 
 void ImageGrabber::SyncWithImu()
+/**********************************************************
+*           图像和IMU数据的同步以及跟踪的入口
+***********************************************************/
 {
   const double maxTimeDiff = 0.01;
   while(1)
@@ -276,6 +285,9 @@ void ImageGrabber::SyncWithImu()
 }
 
 void ImuGrabber::GrabImu(const sensor_msgs::ImuConstPtr &imu_msg)
+/***********************************************************
+*               获取IMU数据，存入队列中
+***********************************************************/
 {
   mBufMutex.lock();
   imuBuf.push(imu_msg);

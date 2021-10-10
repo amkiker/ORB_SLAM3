@@ -1815,9 +1815,11 @@ void Tracking::Track()
             if(mState==OK)
             {
                 // Local Mapping might have changed some MapPoints tracked in last frame
-                // 
+                // 检查上一帧中被替换的地图点，将地图点替换成新的地图点（在局部建图线程中可能会被替换）
                 CheckReplacedInLastFrame();
-
+                
+                //如果运动模型是空的且imu未初始化，或者刚刚完成重定位，则跟踪关键帧或者用恒速度进行跟踪，恒速度跟踪失败
+                //再跟踪参考关键帧
                 if((mVelocity.empty() && !pCurrentMap->isImuInitialized()) || mCurrentFrame.mnId<mnLastRelocFrameId+2)
                 {
                     //Verbose::PrintMess("TRACK: Track with respect to the reference KF ", Verbose::VERBOSITY_DEBUG);
@@ -1831,14 +1833,16 @@ void Tracking::Track()
                         bOK = TrackReferenceKeyFrame();
                 }
 
-
+                //如果跟踪失败，
                 if (!bOK)
                 {
+                    //如果刚刚进行重定位，且为imu模式，则将mState=LOST
                     if ( mCurrentFrame.mnId<=(mnLastRelocFrameId+mnFramesToResetIMU) &&
                          (mSensor==System::IMU_MONOCULAR || mSensor==System::IMU_STEREO))
                     {
                         mState = LOST;
                     }
+                    //否则如果地图中关键帧数量大于10，则mState = RECENTLY_LOST
                     else if(pCurrentMap->KeyFramesInMap()>10)
                     {
                         cout << "KF in map: " << pCurrentMap->KeyFramesInMap() << endl;
@@ -1846,6 +1850,7 @@ void Tracking::Track()
                         mTimeStampLost = mCurrentFrame.mTimeStamp;
                         //mCurrentFrame.SetPose(mLastFrame.mTcw);
                     }
+                    //其它情况mState = LOST
                     else
                     {
                         mState = LOST;
@@ -1854,12 +1859,12 @@ void Tracking::Track()
             }
             else
             {
-                //已完成初始化，正常定位模式
                 if (mState == RECENTLY_LOST)
                 {
                     Verbose::PrintMess("Lost for a short time", Verbose::VERBOSITY_NORMAL);
 
                     bOK = true;
+                    //如果是imu模式，则用纯imu进行跟踪，最多跟踪5s，还失败则mState=LOST
                     if((mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO))
                     {
                         if(pCurrentMap->isImuInitialized())
@@ -1874,6 +1879,7 @@ void Tracking::Track()
                             bOK=false;
                         }
                     }
+                    //如果是纯视觉模式，进行重定位，重定位失败，则mState = LOST
                     else
                     {
                         // TODO fix relocalization
@@ -1890,7 +1896,8 @@ void Tracking::Track()
                 {
 
                     Verbose::PrintMess("A new map is started...", Verbose::VERBOSITY_NORMAL);
-
+                    
+                    //如果地图中关键帧数量小于10，则重置地图，否则新建一个地图，删除mpLastKeyFrame，从头开始
                     if (pCurrentMap->KeyFramesInMap()<10)
                     {
                         mpSystem->ResetActiveMap();
@@ -1908,10 +1915,10 @@ void Tracking::Track()
             }
 
         }
-        else
+        else    //已完成初始化，纯定位模式（局部建图线程不工作）
         {
             // Localization Mode: Local Mapping is deactivated (TODO Not available in inertial mode)
-            if(mState==LOST)
+            if(mState==LOST)    //进行重定位
             {
                 if(mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO)
                     Verbose::PrintMess("IMU. State LOST", Verbose::VERBOSITY_NORMAL);
@@ -1919,7 +1926,7 @@ void Tracking::Track()
             }
             else
             {
-                if(!mbVO)
+                if(!mbVO)   //恒速度模型非空用恒速度模型，否则参考关键帧
                 {
                     // In last frame we tracked enough MapPoints in the map
                     if(!mVelocity.empty())
@@ -1931,7 +1938,7 @@ void Tracking::Track()
                         bOK = TrackReferenceKeyFrame();
                     }
                 }
-                else
+                else        //同时用恒速度模型和重定位，重定位成功则相信重定位
                 {
                     // In last frame we tracked mainly "visual odometry" points.
 
@@ -1979,7 +1986,8 @@ void Tracking::Track()
                 }
             }
         }
-
+        
+        //更新参考关键帧，如果当前帧不是新的关键帧，则用上一时刻的关键帧，否则更新关键帧为当前帧
         if(!mCurrentFrame.mpReferenceKF)
             mCurrentFrame.mpReferenceKF = mpReferenceKF;
 
@@ -1995,6 +2003,7 @@ void Tracking::Track()
         std::chrono::steady_clock::time_point time_StartLMTrack = std::chrono::steady_clock::now();
 #endif
         // If we have an initial estimation of the camera pose and matching. Track the local map.
+        //跟踪成功，跟踪局部地图，寻找更多的匹配，优化当前帧的位姿
         if(!mbOnlyTracking)
         {
             if(bOK)
@@ -2822,6 +2831,7 @@ bool Tracking::TrackLocalMap()
 #ifdef REGISTER_TIMES
     std::chrono::steady_clock::time_point time_StartLMUpdate = std::chrono::steady_clock::now();
 #endif
+    //更新局部地图
     UpdateLocalMap();
 #ifdef REGISTER_TIMES
     std::chrono::steady_clock::time_point time_StartSearchLP = std::chrono::steady_clock::now();
@@ -3300,7 +3310,9 @@ void Tracking::UpdateLocalMap()
     mpAtlas->SetReferenceMapPoints(mvpLocalMapPoints);
 
     // Update
+    //更新局部关键帧
     UpdateLocalKeyFrames();
+    //更新局部地图点
     UpdateLocalPoints();
 }
 
@@ -3337,6 +3349,7 @@ void Tracking::UpdateLocalPoints()
 void Tracking::UpdateLocalKeyFrames()
 {
     // Each map point vote for the keyframes in which it has been observed
+    //统计与当前帧有共视关系的关键帧及公视地图点数，找出共视程度最高的关键帧
     map<KeyFrame*,int> keyframeCounter;
     if(!mpAtlas->isImuInitialized() || (mCurrentFrame.mnId<mnLastRelocFrameId+2))
     {
@@ -3459,8 +3472,8 @@ void Tracking::UpdateLocalKeyFrames()
             }
         }
     }
-
     // Add 10 last temporal KFs (mainly for IMU)
+    //如果是imu模式，添加前面连续的20帧
     if((mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO) &&mvpLocalKeyFrames.size()<80)
     {
         KeyFrame* tempKeyFrame = mCurrentFrame.mpLastKeyFrame;

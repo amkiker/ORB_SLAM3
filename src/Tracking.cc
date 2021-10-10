@@ -2839,7 +2839,7 @@ bool Tracking::TrackLocalMap()
     double timeUpdatedLM_ms = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_StartSearchLP - time_StartLMUpdate).count();
     vdUpdatedLM_ms.push_back(timeUpdatedLM_ms);
 #endif
-
+    //将局部未匹配的局部地图点投影到当前帧，进行匹配
     SearchLocalPoints();
 #ifdef REGISTER_TIMES
     std::chrono::steady_clock::time_point time_StartPoseOpt = std::chrono::steady_clock::now();
@@ -2859,23 +2859,23 @@ bool Tracking::TrackLocalMap()
         }
 
     int inliers;
-    if (!mpAtlas->isImuInitialized())
+    if (!mpAtlas->isImuInitialized())   //imu没有初始化
         Optimizer::PoseOptimization(&mCurrentFrame);
     else
     {
-        if(mCurrentFrame.mnId<=mnLastRelocFrameId+mnFramesToResetIMU)
+        if(mCurrentFrame.mnId<=mnLastRelocFrameId+mnFramesToResetIMU)   //刚刚重定位
         {
             Verbose::PrintMess("TLM: PoseOptimization ", Verbose::VERBOSITY_DEBUG);
             Optimizer::PoseOptimization(&mCurrentFrame);
         }
         else
         {
-            if(!mbMapUpdated)
+            if(!mbMapUpdated)   //地图为更新（与上一帧距离近，误差小）
             {
                 Verbose::PrintMess("TLM: PoseInertialOptimizationLastFrame ", Verbose::VERBOSITY_DEBUG);
                 inliers = Optimizer::PoseInertialOptimizationLastFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
             }
-            else
+            else    //地图更新了（关键帧被优化了，误差更小）
             {
                 Verbose::PrintMess("TLM: PoseInertialOptimizationLastKeyFrame ", Verbose::VERBOSITY_DEBUG);
                 inliers = Optimizer::PoseInertialOptimizationLastKeyFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
@@ -2902,8 +2902,9 @@ bool Tracking::TrackLocalMap()
         }
 
     mnMatchesInliers = 0;
-
+    
     // Update MapPoints Statistics
+    //统计点数
     for(int i=0; i<mCurrentFrame.N; i++)
     {
         if(mCurrentFrame.mvpMapPoints[i])
@@ -2926,6 +2927,7 @@ bool Tracking::TrackLocalMap()
 
     // Decide if the tracking was succesful
     // More restrictive if there was a relocalization recently
+    //根据点数，返回是否跟踪成功
     mpLocalMapper->mnMatchesInliers=mnMatchesInliers;
     if(mCurrentFrame.mnId<mnLastRelocFrameId+mMaxFrames && mnMatchesInliers<50)
         return false;
@@ -3299,7 +3301,7 @@ void Tracking::SearchLocalPoints()
 
         if(mState==LOST || mState==RECENTLY_LOST) // Lost for less than 1 second
             th=15;
-
+        //匹配
         int matches = matcher.SearchByProjection(mCurrentFrame, mvpLocalMapPoints, th, mpLocalMapper->mbFarPoints, mpLocalMapper->mThFarPoints);
     }
 }
@@ -3317,6 +3319,9 @@ void Tracking::UpdateLocalMap()
 }
 
 void Tracking::UpdateLocalPoints()
+/*******************************************
+* 更新局部地图点：将mvpLocalKeyFrames看到的点放入mvpLocalMapPoints中
+********************************************/
 {
     mvpLocalMapPoints.clear();
 

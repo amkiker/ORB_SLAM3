@@ -51,14 +51,19 @@ Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer,
     mnInitialFrameId(0), mbCreatedMap(false), mnFirstFrameId(0), mpCamera2(nullptr)
 {
     // Load camera parameters from settings file
-    cv::FileStorage fSettings(strSettingPath, cv::FileStorage::READ);
-
+    cv::FileStorage fSettings(strSettingPath, cv::FileStorage::READ);//只读
+    
+    //读取相机参数
+    //如果是ROS，DepthMapFactor应该设为1，即深度不进行缩放
     bool b_parse_cam = ParseCamParamFile(fSettings);
     if(!b_parse_cam)
     {
         std::cout << "*Error with the camera parameters in the config file*" << std::endl;
     }
 
+    // Load ORB parameters
+    //读取ORB特征提取的相关参数，该函数中还会
+    //根据参数构造ORB提取器mpORBextractorLeft(左目)、mpORBextractorRight(右目)、mpIniORBextractor(初始化用)
     // Load ORB parameters
     bool b_parse_orb = ParseORBParamFile(fSettings);
     if(!b_parse_orb)
@@ -69,6 +74,8 @@ Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer,
     initID = 0; lastID = 0;
 
     // Load IMU parameters
+    //读取imu参数，该函数中还会
+    //根据参数构建预积分处理器mpImuPreintegratedFromLastKF
     bool b_parse_imu = true;
     if(sensor==System::IMU_MONOCULAR || sensor==System::IMU_STEREO)
     {
@@ -1330,9 +1337,12 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
 
 
 cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp, string filename)
+/*************************************************************
+*                       单目开始跟踪
+**************************************************************/
 {
     mImGray = im;
-
+    //将彩色图像转为灰度图像
     if(mImGray.channels()==3)
     {
         if(mbRGB)
@@ -1347,7 +1357,8 @@ cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp,
         else
             cvtColor(mImGray,mImGray,cv::COLOR_BGRA2GRAY);
     }
-
+    
+    //构造Frame，同时完成特征点的提取、计算词袋等操作
     if (mSensor == System::MONOCULAR)
     {
         if(mState==NOT_INITIALIZED || mState==NO_IMAGES_YET ||(lastID - initID) < mMaxFrames)
@@ -1355,6 +1366,7 @@ cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp,
         else
             mCurrentFrame = Frame(mImGray,timestamp,mpORBextractorLeft,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth);
     }
+    //imu模式的Frame构造函数
     else if(mSensor == System::IMU_MONOCULAR)
     {
         if(mState==NOT_INITIALIZED || mState==NO_IMAGES_YET)
@@ -1364,7 +1376,7 @@ cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp,
         else
             mCurrentFrame = Frame(mImGray,timestamp,mpORBextractorLeft,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth,&mLastFrame,*mpImuCalib);
     }
-
+    // t0存储未初始化时的第1帧时间戳
     if (mState==NO_IMAGES_YET)
         t0=timestamp;
 
@@ -1376,7 +1388,7 @@ cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp,
 #endif
 
     lastID = mCurrentFrame.mnId;
-    Track();
+    Track(); // 跟踪 ｜ 最主要的函数
 
     return mCurrentFrame.mTcw.clone();
 }
@@ -1663,7 +1675,8 @@ void Tracking::Track()
             usleep(500);
         mbStep = false;
     }
-
+    
+    //如果imu数据有问题，则充值当前地图
     if(mpLocalMapper->mbBadImu)
     {
         cout << "TRACK: Reset map because local mapper set the bad imu flag " << endl;
@@ -1672,9 +1685,11 @@ void Tracking::Track()
     }
 
     Map* pCurrentMap = mpAtlas->GetCurrentMap();
-
+    
+    //处理时间戳异常情况
     if(mState!=NO_IMAGES_YET)
-    {
+    {   
+        //当前时间戳大于上一帧，晴空imu数据，新建地图
         if(mLastFrame.mTimeStamp>mCurrentFrame.mTimeStamp)
         {
             cerr << "ERROR: Frame with a timestamp older than previous frame detected!" << endl;
@@ -1683,6 +1698,8 @@ void Tracking::Track()
             CreateMapInAtlas();
             return;
         }
+        //时间戳出现大跳变（1s），如果imu没有完成BA2，重置地图
+        //如果完成了BA2，新建地图
         else if(mCurrentFrame.mTimeStamp>mLastFrame.mTimeStamp+1.0)
         {
             cout << "id last: " << mLastFrame.mnId << "    id curr: " << mCurrentFrame.mnId << endl;
@@ -1712,7 +1729,7 @@ void Tracking::Track()
         }
     }
 
-
+    //imu模式下设置bias参数
     if ((mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO) && mpLastKeyFrame)
         mCurrentFrame.SetNewBias(mpLastKeyFrame->GetImuBias());
 
@@ -1722,7 +1739,8 @@ void Tracking::Track()
     }
 
     mLastProcessedState=mState;
-
+    
+    //imu模式下，进行imu预积分
     if ((mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO) && !mbCreatedMap)
     {
 #ifdef REGISTER_TIMES
@@ -1753,7 +1771,8 @@ void Tracking::Track()
         mbMapUpdated = true;
     }
 
-
+    
+    //如果未进行初始化，则进行初始化
     if(mState==NOT_INITIALIZED)
     {
         if(mSensor==System::STEREO || mSensor==System::RGBD || mSensor==System::IMU_STEREO)
@@ -1778,6 +1797,7 @@ void Tracking::Track()
     }
     else
     {
+        
         // System is initialized. Track Frame.
         bool bOK;
 
@@ -1788,14 +1808,14 @@ void Tracking::Track()
         // Initial camera pose estimation using motion model or relocalization (if tracking is lost)
         if(!mbOnlyTracking)
         {
-
+            // 已完成初始化，正常定位模式
             // State OK
             // Local Mapping is activated. This is the normal behaviour, unless
             // you explicitly activate the "only tracking" mode.
             if(mState==OK)
             {
-
                 // Local Mapping might have changed some MapPoints tracked in last frame
+                // 
                 CheckReplacedInLastFrame();
 
                 if((mVelocity.empty() && !pCurrentMap->isImuInitialized()) || mCurrentFrame.mnId<mnLastRelocFrameId+2)
@@ -1834,7 +1854,7 @@ void Tracking::Track()
             }
             else
             {
-
+                //已完成初始化，正常定位模式
                 if (mState == RECENTLY_LOST)
                 {
                     Verbose::PrintMess("Lost for a short time", Verbose::VERBOSITY_NORMAL);

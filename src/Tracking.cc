@@ -1676,7 +1676,7 @@ void Tracking::Track()
         mbStep = false;
     }
     
-    //如果imu数据有问题，则充值当前地图
+    //如果imu数据有问题，则重置当前地图
     if(mpLocalMapper->mbBadImu)
     {
         cout << "TRACK: Reset map because local mapper set the bad imu flag " << endl;
@@ -1689,7 +1689,7 @@ void Tracking::Track()
     //处理时间戳异常情况
     if(mState!=NO_IMAGES_YET)
     {   
-        //当前时间戳大于上一帧，晴空imu数据，新建地图
+        //上一帧时间戳岛屿当前帧时间戳，说明时间戳错乱，或者重启了算法，清空imu数据，新建地图
         if(mLastFrame.mTimeStamp>mCurrentFrame.mTimeStamp)
         {
             cerr << "ERROR: Frame with a timestamp older than previous frame detected!" << endl;
@@ -1698,7 +1698,7 @@ void Tracking::Track()
             CreateMapInAtlas();
             return;
         }
-        //时间戳出现大跳变（1s），如果imu没有完成BA2，重置地图
+        //时间戳出现大跳变（1s），说明1s没有数据传输，如果imu没有完成BA2，重置地图
         //如果完成了BA2，新建地图
         else if(mCurrentFrame.mTimeStamp>mLastFrame.mTimeStamp+1.0)
         {
@@ -1818,15 +1818,14 @@ void Tracking::Track()
                 // 检查上一帧中被替换的地图点，将地图点替换成新的地图点（在局部建图线程中可能会被替换）
                 CheckReplacedInLastFrame();
                 
-                //如果运动模型是空的且imu未初始化，或者刚刚完成重定位，则跟踪关键帧或者用恒速度进行跟踪，恒速度跟踪失败
-                //再跟踪参考关键帧
                 if((mVelocity.empty() && !pCurrentMap->isImuInitialized()) || mCurrentFrame.mnId<mnLastRelocFrameId+2)
-                {
+                {   //如果运动模型是空的且imu未初始化，或者刚刚完成重定位，则跟踪关键帧
                     //Verbose::PrintMess("TRACK: Track with respect to the reference KF ", Verbose::VERBOSITY_DEBUG);
                     bOK = TrackReferenceKeyFrame();
                 }
                 else
-                {
+                {   // 否则先用恒速度进行跟踪（因为机器可能在匀速运行，匀速跟踪较为简单，可以提高算法效率），
+                    // 恒速度跟踪失败，再用关键帧进行跟踪
                     //Verbose::PrintMess("TRACK: Track with motion model", Verbose::VERBOSITY_DEBUG);
                     bOK = TrackWithMotionModel();
                     if(!bOK)
